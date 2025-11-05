@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Browser-Only Peer-to-Peer Demo (using WebRTC)</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 2em; }
+textarea { width: 100%; height: 8em; margin-top: 0.5em; }
+button, label { margin: 0.5em 0; padding: 0.5em 1em; border-radius: 8px; }
+#log { white-space: pre-wrap; background: #f7f7f7; border: 1px solid #ccc; padding: 1em; height: 10em; overflow: auto; }
+#spinner { display: inline-block; width: 16px; height: 16px; border: 3px solid #ccc; border-top-color: #333; border-radius: 50%; animation: spin 1s linear infinite; vertical-align: middle; margin-left: 10px; visibility: hidden; }
+@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+/* Toast container centered at bottom */
+#toastContainer {
+  position: fixed;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 0.5em;
+  z-index: 9999;
+}
+.toast {
+  background: rgba(50,50,50,0.9);
+  color: #fff;
+  padding: 0.5em 1em;
+  border-radius: 8px;
+  font-size: 0.9em;
+  opacity: 0;
+  transform: translateY(20px);
+  transition: transform 0.3s ease, opacity 0.3s ease;
+}
+.toast.show {
+  opacity: 0.95;
+  transform: translateY(0);
+}
+.iconButton {
+  font-size: 0.9em;
+  background: #eee;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0.1em 0.4em;
+  margin-left: 0.4em;
+  cursor: pointer;
+}
+.iconButton:hover {
+  background: #ddd;
+}
+</style>
+</head>
+<body>
+
+<h2>Browser-Only Peer-to-Peer Demo (using WebRTC)</h2>
+<p>Open in two browsers. One creates an offer, the other accepts. Exchange the Session Description Protocol (SDP) text manually.  <br>Use TURN mode to overcome restrictive firewalls.</p>
+
+<div id="controls">
+  <label>TURN Mode: <button id="turnMode">Default</button></label>
+  <button id="createOffer">Create Offer (here)</button>
+  <button id="pasteRemote">📋 Paste Offer</button>
+</div>
+
+<div id="sdpExchange">
+  <h3>
+    Remote SDP
+    <button id="pasteIcon" title="Paste from clipboard" class="iconButton">📥</button>
+  </h3>
+  <textarea id="remote"></textarea>
+</div>
+
+<div id="localSDP">
+  <h3>
+    Local SDP (copy to the other peer):
+    <span id="spinner"></span>
+    <button id="copyIcon" title="Copy to clipboard" class="iconButton">📋</button>
+  </h3>
+  <textarea id="local" readonly></textarea>
+</div>
+
+<h3>Chat</h3>
+<div id="chatWindow" style="border:1px solid #ccc; padding:0.5em; height:150px; overflow-y:auto; margin-bottom:0.5em; background:#f9f9f9;"></div>
+<div style="display:flex; gap:0.5em;">
+  <input id="msg" placeholder="type message..." style="flex:1;"/>
+  <button id="send">Send</button>
+</div>
+
+<h3>Log</h3>
+<div id="log"></div>
+
+<div id="toastContainer"></div>
+
+<script>
+const toastContainer = document.getElementById('toastContainer');
+
+function status(msg) {
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = msg;
+  toastContainer.appendChild(toast);
+
+  // trigger animation
+  requestAnimationFrame(() => toast.classList.add('show'));
+
+  // fade out after 2s
+  setTimeout(() => {
+    toast.classList.remove('show');
+    toast.addEventListener('transitionend', () => toast.remove(), { once: true });
+  }, 2000);
+}
+
+const controlsDiv = document.getElementById('controls');
+const sdpExchangeDiv = document.getElementById('sdpExchange');
+const localSDPDiv = document.getElementById('localSDP');
+
+function hideControlsIfConnected() {
+  const createBtn = document.getElementById('createOffer');
+  if ((dc && dc.readyState === "open") || remoteBox.value || localBox.value) {
+    createBtn.style.display = "none"; // hide Create Offer if remote OR local SDP exists
+  } else {
+    createBtn.style.display = "inline-block";
+  }
+}
+
+
+function hideSDPAreasIfConnected() {
+  if (dc && dc.readyState === "open") {
+    sdpExchangeDiv.style.display = "none";
+    localSDPDiv.style.display = "none";
+    controlsDiv.style.display = "none"; // hide all controls
+  } else {
+    sdpExchangeDiv.style.display = "block";
+    localSDPDiv.style.display = "block";
+    controlsDiv.style.display = "block";
+  }
+}
+
+const turnButton = document.getElementById("turnMode");
+let turnState = 0; // 0=Off, 1=Default, 2=Force TURN
+const turnLabels = ["STUN (fast)", "STUN/TURN (fast & slow - reliable)", "Force TURN Only (slow & reliable)"];
+turnButton.textContent = turnLabels[turnState];
+turnButton.onclick = () => {
+  turnState = (turnState + 1) % 3;
+  turnButton.textContent = turnLabels[turnState];
+  log(`TURN mode set to: ${turnLabels[turnState]}`);
+  status(`TURN mode: ${turnLabels[turnState]}`);
+};
+
+const log = m => {
+  const d = document.getElementById('log');
+  console.log(m);
+  d.textContent += m + "\n";
+  d.scrollTop = d.scrollHeight;
+};
+
+let pc, dc;
+const spinner = document.getElementById('spinner');
+const pasteButton = document.getElementById('pasteRemote');
+const localBox = document.getElementById('local');
+const remoteBox = document.getElementById('remote');
+
+const updatePasteLabel = () => {
+  pasteButton.textContent = localBox.value ? "Paste Offer & Connect" : "Paste Offer & Generate key";
+};
+
+const updatePasteVisibility = () => {
+  pasteButton.style.display = ((dc && dc.readyState === "open") || (localBox.value && remoteBox.value)) ? "none" : "inline-block";
+  hideSDPAreasIfConnected();
+  hideControlsIfConnected();
+};
+
+const setLocalSDP = async desc => {
+  //if (desc.type === "offer" && !desc.sdp.includes("a=candidate")) {
+  //  log("⚪ Created offer (no ICE candidates yet).");
+  //  return;
+  //}
+
+  const sdpText = JSON.stringify(desc, null, 2);
+  localBox.value = sdpText;
+  updatePasteLabel();
+  updatePasteVisibility();
+
+  // 👇 NEW: log the SDP in readable form
+  //log("----- BEGIN LOCAL SDP -----");
+  //log(desc.sdp || sdpText);
+  //log("----- END LOCAL SDP -----");
+
+  try {
+    await navigator.clipboard.writeText(sdpText);
+    log("✅ Local SDP auto-copied.");
+    status("Local SDP copied to clipboard ✅");
+  } catch(e) {
+    log("⚠️ Failed to copy Local SDP: " + e);
+    status("Failed to copy SDP ⚠️");
+  }
+};
+
+
+function makePeer() {
+  let iceTransportPolicy = "all";
+  let iceServers = [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: ["turn:openrelay.metered.ca:80","turn:openrelay.metered.ca:443","turns:openrelay.metered.ca:443"], username: "openrelayproject", credential: "openrelayproject" },
+    { urls: "turns:turn.anyfirewall.com:443", username: "webrtc", credential: "webrtc" },
+  ];
+  if (turnState === 0) { iceServers = [{ urls: "stun:stun.l.google.com:19302" }]; }
+  if (turnState === 2) { iceTransportPolicy = "relay"; }
+
+  pc = new RTCPeerConnection({ iceServers, iceTransportPolicy });
+  log('Using ICE servers: ' + JSON.stringify(pc.getConfiguration().iceServers, null, 2));
+  log('ICE transport policy: ' + pc.getConfiguration().iceTransportPolicy);
+  pc.onconnectionstatechange = () => log("Connection state: " + pc.connectionState);
+  pc.oniceconnectionstatechange = () => log("ICE state: " + pc.iceConnectionState);
+
+  pc.ondatachannel = e => { dc = e.channel; setupDataChannel(); };
+  pc.onicecandidate = e => {
+    console.log("onicecandidate event", e.candidate);
+    if (!e.candidate) {
+      log("✅ ICE gathering complete");
+      return;
+    }
+
+    const c = e.candidate;
+    let type = "unknown";
+    const match = c.candidate.match(/typ (\w+)/);
+    if (match) type = match[1];
+    log(`New [${type}] candidate: ${c.candidate}`);
+
+    setLocalSDP(pc.localDescription);
+  };
+
+  pc.onicecandidateerror = e => {
+    log(`[ICE Candidate Error] ${e.errorCode} ${e.errorText} ${e.url || ''}`);
+  };
+
+  pc.onicegatheringstatechange = async () => {
+    log("ICE gathering state: " + pc.iceGatheringState);
+    spinner.style.visibility = pc.iceGatheringState === "gathering" ? "visible" : "hidden";
+
+    if (pc.iceGatheringState === "complete") {
+      const sdp = pc.localDescription?.sdp || "";
+      const relayCount = (sdp.match(/typ relay/g) || []).length;
+      const srflxCount = (sdp.match(/typ srflx/g) || []).length;
+      const hostCount = (sdp.match(/typ host/g) || []).length;
+
+      log(`🔎 SDP candidate summary → host: ${hostCount}, srflx: ${srflxCount}, relay: ${relayCount}`);
+      await setLocalSDP(pc.localDescription);
+    }
+  };
+    
+}
+
+function setupDataChannel() {
+  dc.onopen = () => {
+    log("✅ DataChannel open (connected!)");
+    status("Connected ✅");
+    updatePasteVisibility();
+    hideSDPAreasIfConnected();
+    hideControlsIfConnected();
+  };
+  dc.onmessage = e => appendChat(e.data, false);
+  dc.onclose = () => {
+    log("❌ DataChannel closed");
+    hideSDPAreasIfConnected();
+    hideControlsIfConnected();
+  };
+}
+
+document.getElementById('createOffer').onclick = async () => {
+  remoteBox.value = "";
+  makePeer();
+  dc = pc.createDataChannel("chat");
+  setupDataChannel();
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  await setLocalSDP(pc.localDescription);
+  updatePasteLabel();
+  updatePasteVisibility();
+};
+
+pasteButton.onclick = async () => {
+  const remoteText = await navigator.clipboard.readText();
+  remoteBox.value = remoteText;
+  log("✅ Pasted clipboard content into Remote SDP box.");
+  status("Remote SDP pasted 📋");
+  updatePasteVisibility();
+  try {
+    const remote = JSON.parse(remoteText);
+    if (!localBox.value) {
+      makePeer();
+      await pc.setRemoteDescription(remote);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await setLocalSDP(pc.localDescription);
+    } else {
+      await pc.setRemoteDescription(remote);
+      log("✅ Remote SDP set. Waiting for DataChannel...");
+      status("Remote SDP set ✅");
+    }
+    updatePasteVisibility();
+  } catch(e) {
+    log("⚠️ Invalid SDP JSON: " + e);
+    status("Invalid SDP ⚠️");
+  }
+};
+
+const chatWindow = document.getElementById('chatWindow');
+function appendChat(text, self=false) {
+  const div = document.createElement('div');
+  div.textContent = (self ? "You: " : "Peer: ") + text;
+  div.style.margin = "0.2em 0";
+  chatWindow.appendChild(div);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
+}
+
+document.getElementById('send').onclick = () => {
+  const m = document.getElementById('msg').value.trim();
+  if (!m) return;
+  if (dc && dc.readyState === "open") {
+    dc.send(m);
+    appendChat(m, true);
+    document.getElementById('msg').value = "";
+  } else status("Channel not open yet ⚠️");
+};
+
+document.getElementById('msg').addEventListener('keydown', e => {
+  if (e.key === "Enter") { e.preventDefault(); document.getElementById('send').click(); }
+});
+
+// --- Small icon button handlers ---
+document.getElementById("copyIcon").onclick = async () => {
+  try {
+    await navigator.clipboard.writeText(localBox.value.trim());
+    log("✅ Local SDP copied (via icon button).");
+    status("Local SDP copied 📋");
+  } catch (e) {
+    log("⚠️ Failed to copy Local SDP: " + e);
+    status("Copy failed ⚠️");
+  }
+};
+
+document.getElementById("pasteIcon").onclick = async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+    remoteBox.value = text;
+    log("✅ Pasted clipboard content into Remote SDP box (via icon).");
+    status("Remote SDP pasted 📥");
+  } catch (e) {
+    log("⚠️ Failed to paste Remote SDP: " + e);
+    status("Paste failed ⚠️");
+  }
+};
+
+
+updatePasteLabel();
+updatePasteVisibility();
+</script>
+
+</body>
+</html>
+
