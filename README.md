@@ -6,7 +6,7 @@ This is a **simple, browser-only demonstration** of peer-to-peer (P2P) chat usin
 
 ## Features
 
-- **P2P chat in the browser** – no backend required
+- **P2P chat between 2 browsers** – no backend required
 - **Manual SDP exchange** – copy-paste Session Description Protocol (SDP) text to establish a connection
 - **TURN mode support** – use public TURN servers to bypass restrictive networks
 - **Status toasts** – visual feedback for connection events
@@ -17,12 +17,10 @@ This is a **simple, browser-only demonstration** of peer-to-peer (P2P) chat usin
 ## How to Use
 
 1. Open the HTML file in **two different browsers or tabs**.
-2. On one browser, click **Create Offer**. The local SDP will be automatically copied to the clipboard.
-3. Paste the local SDP from the first browser into the **Remote SDP** textarea on the second browser and click **Paste Offer & Connect**.
-4. The second browser will generate an answer; copy that SDP back to the first browser’s **Remote SDP** and paste it.
+2. On the 1st browser, click **Create Offer**. The local SDP will be automatically copied to the clipboard.
+3. On the 2nd browser **Paste and Generate** the local SDP from the first browser, which will generate an answer.
+4. On the 1st browser **Paste Offer & Connect** the local SDP from the second browser's answer.
 5. Once both peers have exchanged SDPs, the **DataChannel opens**, and you can send chat messages.
-
----
 
 ## TURN Modes
 
