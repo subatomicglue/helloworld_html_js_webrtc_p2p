@@ -2,6 +2,8 @@
 
 This is a **simple, browser-only demonstration** of peer-to-peer (P2P) chat using **WebRTC**. It allows two users to connect directly from their browsers and exchange messages without a central server, using STUN/TURN servers to traverse NATs and firewalls.
 
+[Try it Out](https://htmlpreview.github.io/?https://raw.githubusercontent.com/subatomicglue/helloworld_html_js_webrtc_p2p/master/index.html)
+
 ---
 
 ## Features
